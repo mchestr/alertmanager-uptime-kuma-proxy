@@ -10,6 +10,7 @@
 name: Create and publish a Docker image
 
 on:
+  create:
   push:
     branches: ['main']
   release:

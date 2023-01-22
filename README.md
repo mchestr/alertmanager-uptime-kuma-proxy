@@ -8,7 +8,7 @@ Currently in use on my [k8s cluster](https://github.com/mchestr/home-cluster/blo
 ### Usage
 
 ```
-export UPTIME_KUMA_URL="https://some.example.com"
+export UPTIME_KUMA_BASE_URL="https://some.example.com"
 docker run -p 3000:3000 alertmanager-uptime-kuma-proxy
 curl -X POST http://localhost:3000/api/push/sometoken
 ```

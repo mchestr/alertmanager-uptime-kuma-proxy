@@ -9,6 +9,7 @@ dependencies = [
  "axum",
  "reqwest",
  "tokio",
+ "url",
 ]
 
 [[package]]

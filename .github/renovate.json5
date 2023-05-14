@@ -65,7 +65,17 @@
       "ignoreTests": true,
       "automergeType": "branch",
       "matchUpdateTypes": ["minor", "patch"]
-    }
+    },
+    {
+      "description": "Alpine Group",
+      "groupName": "Alpine",
+      "matchPackagePatterns": ["alpine", "rust"],
+      "matchDatasources": ["dockerfile"],
+      "group": {
+        "commitMessageTopic": "{{{groupName}}} group"
+      },
+      "separateMinorPatch": true
+    },
   ]
 }
 

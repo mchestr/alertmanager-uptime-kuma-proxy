@@ -16,7 +16,7 @@
   requireConfig: "optional",
   username: "mchesterbot[bot]",
   gitAuthor: "mchesterbot <202745+mchesterbot[bot]@users.noreply.github.com>",
-  repositories: ["mchestr/home-cluster"],
+  repositories: ["mchestr/alertmanager-uptime-kuma-proxy"],
   dependencyDashboardTitle: "Renovate Dashboard",
   suppressNotifications: ["prIgnoreNotification"],
   rebaseWhen: "conflicted",

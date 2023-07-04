@@ -1,53 +1,129 @@
-# This workflow uses actions that are not certified by GitHub.
-# They are provided by a third-party and are governed by
-# separate terms of service, privacy policy, and support
-# documentation.
+name: Release
 
-# GitHub recommends pinning actions to a commit SHA.
-# To get a newer version, you will need to update the SHA.
-# You can also reference a tag or branch, but the action may change without warning.
-
-name: Create and publish a Docker image
-
-on:
-  create:
-  push:
-    branches: ['main']
-  release:
-    types: [published]
+permissions:
+  contents: write
+  packages: write
 
 env:
   REGISTRY: ghcr.io
-  IMAGE_NAME: ${{ github.repository }}
+
+on:
+  push:
+    tags:
+      - '*-?v[0-9]+*'
 
 jobs:
-  build-and-push-image:
+  create-release:
     runs-on: ubuntu-latest
-    permissions:
-      contents: read
-      packages: write
+    outputs:
+      has-releases: ${{ steps.create-release.outputs.has-releases }}
+    env:
+      GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+    steps:
+      - uses: actions/checkout@c85c95e3d7251135ab7dc9ce3241c5835cc595a9 # v3
+      - name: Install cargo-dist
+        run: curl --proto '=https' --tlsv1.2 -LsSf https://github.com/axodotdev/cargo-dist/releases/download/v0.0.7/cargo-dist-installer.sh | sh
+      - id: create-release
+        run: |
+          cargo dist plan --tag=${{ github.ref_name }} --output-format=json > dist-manifest.json
+          echo "dist plan ran successfully"
+          cat dist-manifest.json
 
+          # Create the Github Release™ based on what cargo-dist thinks it should be
+          ANNOUNCEMENT_TITLE=$(jq --raw-output ".announcement_title" dist-manifest.json)
+          IS_PRERELEASE=$(jq --raw-output ".announcement_is_prerelease" dist-manifest.json)
+          jq --raw-output ".announcement_github_body" dist-manifest.json > new_dist_announcement.md
+          gh release create ${{ github.ref_name }} --draft --prerelease="$IS_PRERELEASE" --title="$ANNOUNCEMENT_TITLE" --notes-file=new_dist_announcement.md
+          echo "created announcement!"
+
+          # Upload the manifest to the Github Release™
+          gh release upload ${{ github.ref_name }} dist-manifest.json
+          echo "uploaded manifest!"
+
+          # Disable all the upload-artifacts tasks if we have no actual releases
+          HAS_RELEASES=$(jq --raw-output ".releases != null" dist-manifest.json)
+          echo "has-releases=$HAS_RELEASES" >> "$GITHUB_OUTPUT"
+
+  upload-artifacts:
+    needs: create-release
+    if: ${{ needs.create-release.outputs.has-releases == 'true' }}
+    strategy:
+      matrix:
+        include:
+        - os: ubuntu-20.04
+          dist-args: --artifacts=global
+          install-dist: curl --proto '=https' --tlsv1.2 -LsSf https://github.com/axodotdev/cargo-dist/releases/download/v0.0.7/cargo-dist-installer.sh | sh
+
+    runs-on: ${{ matrix.os }}
+    env:
+      GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@c85c95e3d7251135ab7dc9ce3241c5835cc595a9 # v3
+        with:
+          fetch-depth: 0
+      - name: Install cargo-dist
+        run: ${{ matrix.install-dist }}
+      - name: Run cargo-dist
+        run: |
+          # Actually do builds and make zips and whatnot
+          cargo dist build --tag=${{ github.ref_name }} --output-format=json ${{ matrix.dist-args }} > dist-manifest.json
+          echo "dist ran successfully"
+          cat dist-manifest.json
+
+          # Parse out what we just built and upload it to the Github Release™
+          jq --raw-output ".artifacts[]?.path | select( . != null )" dist-manifest.json > uploads.txt
+          echo "uploading..."
+          cat uploads.txt
+          gh release upload ${{ github.ref_name }} $(cat uploads.txt)
+          echo "uploaded!"
+
+  # Mark the Github Release™ as a non-draft now that everything has succeeded!
+  publish-release:
+    # Only run after all the other tasks, but it's ok if upload-artifacts was skipped
+    needs: [create-release, upload-artifacts]
+    if: ${{ always() && needs.create-release.result == 'success' && (needs.upload-artifacts.result == 'skipped' || needs.upload-artifacts.result == 'success') }}
+    runs-on: ubuntu-latest
+    env:
+      GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+    steps:
+      - uses: actions/checkout@c85c95e3d7251135ab7dc9ce3241c5835cc595a9 # v3
+      - name: mark release as non-draft
+        run: |
+          gh release edit ${{ github.ref_name }} --draft=false
+
+  docker-release:
+    runs-on: ubuntu-latest
+    needs: create-release
     steps:
       - name: Checkout repository
         uses: actions/checkout@c85c95e3d7251135ab7dc9ce3241c5835cc595a9 # v3
 
+      - name: Set up QEMU
+        uses: docker/setup-qemu-action@2b82ce82d56a2a04d2637cd93a637ae1b359c0a7 # v2
+
+      - name: Set up Docker Buildx
+        uses: docker/setup-buildx-action@16c0bc4a6e6ada2cfd8afd41d22d95379cf7c32a # v2
+
       - name: Log in to the Container registry
-        uses: docker/login-action@465a07811f14bebb1938fbed4728c6a1ff8901fc
+        uses: docker/login-action@465a07811f14bebb1938fbed4728c6a1ff8901fc # v2
         with:
           registry: ${{ env.REGISTRY }}
           username: ${{ github.actor }}
           password: ${{ secrets.GITHUB_TOKEN }}
 
-      - name: Extract metadata (tags, labels) for Docker
-        id: meta
-        uses: docker/metadata-action@ef25336f420be2d1a49205baf41a9b88712a65a1
-        with:
-          images: ${{ env.REGISTRY }}/${{ env.IMAGE_NAME }}
+      - name: Get docker image name and build args
+        id: required_args
+        run: |
+          image_name="${{ env.REGISTRY }}/${{ github.actor }}/${{ github.event.repository.name }}"
+          image_names="$image_name:${{ github.ref_name }},$image_name:latest"
+          # lowercase the name
+          image_names=$(echo "$image_names" | tr '[:upper:]' '[:lower:]')
+          echo "image_names=$image_names" >> $GITHUB_OUTPUT
 
-      - name: Build and push Docker image
-        uses: docker/build-push-action@2eb1c1961a95fc15694676618e422e8ba1d63825
+      - name: Build and push to ghcr
+        uses: docker/build-push-action@2eb1c1961a95fc15694676618e422e8ba1d63825 # v4
         with:
           context: .
           push: true
-          tags: ${{ steps.meta.outputs.tags }}
-          labels: ${{ steps.meta.outputs.labels }}
+          tags: ${{ steps.required_args.outputs.image_names }}
